@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Binary Form ID</title>
+<script src="https://www.verovio.org/javascript/latest/verovio-toolkit-wasm.js"></script>
+<style>
+:root { color-scheme: light; --ink:#172033; --muted:#586174; --line:#d9deea; --panel:#f5f7fb; --blue:#2457a6; --green:#176b45; --red:#a33131; }
+* { box-sizing:border-box; }
+body { font-family:Arial,sans-serif; color:var(--ink); max-width:1050px; margin:14px auto; padding:0 14px 20px; line-height:1.35; }
+h1 { margin:0 0 3px; font-size:1.55rem; } p { color:var(--muted); margin:3px 0 7px; }
+.toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:7px 0; }
+button { border:1px solid #b9c4d8; background:white; color:var(--ink); border-radius:8px; padding:8px 12px; font-size:.94rem; cursor:pointer; }
+button:hover { background:#edf2fb; }
+button.primary { background:var(--blue); color:white; border-color:var(--blue); font-weight:700; }
+button.primary:hover { background:#194786; }
+#notation { border:1px solid var(--line); border-radius:8px; padding:2px 5px; overflow:hidden; height:clamp(250px, 48vh, 390px); background:white; line-height:0; display:flex; align-items:flex-start; justify-content:center; }
+#notation svg { display:block; width:100%; height:100%; max-height:100%; object-fit:contain; object-position:top center; }
+.toolbar { margin:7px 0; }
+.questions { margin-top:5px; }
+.small { font-size:.9rem; }
+.questions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:5px; }
+.question { border:1px solid var(--line); border-radius:9px; padding:10px; background:var(--panel); }
+.question h2 { font-size:.94rem; margin:0 0 7px; }
+.choices { display:flex; gap:6px; flex-wrap:wrap; }
+.choices button { flex:1; min-width:0; padding:7px 8px; font-size:.88rem; }
+.choices button.selected { outline:3px solid #9bb9ec; border-color:var(--blue); background:#eaf1ff; }
+.choices button.correct { background:#e5f5ec; border-color:var(--green); color:var(--green); }
+.choices button.incorrect { background:#fff0f0; border-color:var(--red); color:var(--red); }
+#feedback { margin-top:5px; font-weight:700; min-height:1.2em; }
+#score { color:var(--green); }
+@media (max-width:700px) { .questions { grid-template-columns:1fr; } body { margin-top:10px; } h1 { font-size:1.4rem; } #notation { height:clamp(230px, 42vh, 330px); overflow:hidden; } }
+</style>
+</head>
+<body>
+<h1>Binary Form ID</h1>
+<p>Study the 16-measure melody. Identify its formal design by selecting one answer in each category, then submit your responses.</p>
+<div class="toolbar">
+  <span class="small" id="status" aria-live="polite">Preparing notation…</span>
+</div>
+<div id="notation" aria-label="Generated 16-measure melody in treble clef"></div>
+<div class="questions">
+  <section class="question">
+    <h2>1. Is the melody continuous or sectional?</h2>
+    <div class="choices" data-question="form">
+      <button type="button" data-value="Continuous">Continuous</button>
+      <button type="button" data-value="Sectional">Sectional</button>
+    </div>
+  </section>
+  <section class="question">
+    <h2>2. Is the melody rounded or simple?</h2>
+    <div class="choices" data-question="shape">
+      <button type="button" data-value="Rounded">Rounded</button>
+      <button type="button" data-value="Simple">Simple</button>
+    </div>
+  </section>
+  <section class="question">
+    <h2>3. Is the melody balanced or not balanced?</h2>
+    <div class="choices" data-question="balance">
+      <button type="button" data-value="Balanced">Balanced</button>
+      <button type="button" data-value="Not balanced">Not balanced</button>
+    </div>
+  </section>
+</div>
+<div class="toolbar">
+  <button class="primary" id="submit">Submit Answers</button>
+  <button id="clear">Clear Answers</button>
+  <button id="generate">Generate New Melody</button>
+  <span id="score" aria-live="polite"></span>
+</div>
+<div id="feedback" aria-live="polite"></div>
+<script>
+let toolkit = null;
+let current = null;
+let selections = {form:null, shape:null, balance:null};
+
+const pitchInfo = {
+  C4:{m:0,n:'c',o:4}, D4:{m:2,n:'d',o:4}, E4:{m:4,n:'e',o:4}, F4:{m:5,n:'f',o:4},
+  G4:{m:7,n:'g',o:4}, A4:{m:9,n:'a',o:4}, B4:{m:11,n:'b',o:4},
+  C5:{m:12,n:'c',o:5}, D5:{m:14,n:'d',o:5}, E5:{m:16,n:'e',o:5}, F5:{m:17,n:'f',o:5},
+  G5:{m:19,n:'g',o:5}, 'F#4':{m:6,n:'f',o:4,a:'s'}, 'F#5':{m:18,n:'f',o:5,a:'s'},
+  'Bb4':{m:10,n:'b',o:4,a:'f'}, 'Bb5':{m:22,n:'b',o:5,a:'f'}
+};
+const byMidi = Object.fromEntries(Object.entries(pitchInfo).map(([k,v])=>[v.m,k]));
+const chordTones = {
+  C:['C4','E4','G4','C5','E5'], F:['C4','F4','A4','C5','F5'],
+  G:['B4','D4','G4','B4','D5','G5'], Am:['C4','E4','A4','C5','E5'],
+  D7:['C4','D4','F#4','A4','C5','D5'], G7:['B4','D4','F4','G4','B4','D5','F5']
+};
+const diatonic = ['C4','D4','E4','F4','G4','A4','B4','C5','D5','E5','F5','G5'];
+
+// The exercise is generated from a C-major template, then transposed as a
+// complete finished melody into one of twelve major keys. Selecting the key
+// first ensures every generated exercise has a coherent key signature.
+const majorKeys = [
+  {name:'C major',offset:0,tonic:'c',sig:'0',scale:[['c',0],['d',0],['e',0],['f',0],['g',0],['a',0],['b',0]]},
+  {name:'Db major',offset:1,tonic:'d',sig:'5f',scale:[['d',-1],['e',-1],['f',0],['g',-1],['a',-1],['b',-1],['c',0]]},
+  {name:'D major',offset:2,tonic:'d',sig:'2s',scale:[['d',0],['e',0],['f',1],['g',0],['a',0],['b',0],['c',1]]},
+  {name:'Eb major',offset:3,tonic:'e',sig:'3f',scale:[['e',-1],['f',0],['g',0],['a',-1],['b',-1],['c',0],['d',0]]},
+  {name:'E major',offset:4,tonic:'e',sig:'4s',scale:[['e',0],['f',1],['g',1],['a',0],['b',0],['c',1],['d',1]]},
+  {name:'F major',offset:5,tonic:'f',sig:'1f',scale:[['f',0],['g',0],['a',0],['b',-1],['c',0],['d',0],['e',0]]},
+  {name:'F# major',offset:6,tonic:'f',sig:'6s',scale:[['f',1],['g',1],['a',1],['b',0],['c',1],['d',1],['e',1]]},
+  {name:'G major',offset:7,tonic:'g',sig:'1s',scale:[['g',0],['a',0],['b',0],['c',0],['d',0],['e',0],['f',1]]},
+  {name:'Ab major',offset:8,tonic:'a',sig:'4f',scale:[['a',-1],['b',-1],['c',0],['d',-1],['e',-1],['f',0],['g',0]]},
+  {name:'A major',offset:9,tonic:'a',sig:'3s',scale:[['a',0],['b',0],['c',1],['d',0],['e',0],['f',1],['g',1]]},
+  {name:'Bb major',offset:10,tonic:'b',sig:'2f',scale:[['b',-1],['c',0],['d',0],['e',-1],['f',0],['g',0],['a',0]]},
+  {name:'B major',offset:11,tonic:'b',sig:'5s',scale:[['b',0],['c',1],['d',1],['e',0],['f',1],['g',1],['a',1]]}
+];
+const letterOrder=['c','d','e','f','g','a','b'];
+function accidentalValue(p){ return p.alter ?? (p.a==='s'?1:p.a==='f'?-1:0); }
+function accidentalName(value){ return value===1?'#':value===-1?'b':value===2?'##':value===-2?'bb':''; }
+function transposePitchToKey(pitch,key){
+  const source=pitchInfo[pitch];
+  const sourcePosition=source.o*7+letterOrder.indexOf(source.n);
+  const tonicPosition=4*7+letterOrder.indexOf(key.tonic);
+  const targetPosition=tonicPosition+(sourcePosition-4*7);
+  const octave=Math.floor(targetPosition/7);
+  const degree=((sourcePosition-4*7)%7+7)%7;
+  const [letter,keyAlter]=key.scale[degree];
+  // Chromatic alterations in the C-major template (notably F-sharp in D7)
+  // carry through as the same alteration relative to the target scale.
+  const alteration=keyAlter+accidentalValue(source);
+  const name=letter.toUpperCase()+accidentalName(alteration)+octave;
+  const naturalMidi=(octave-4)*12+({c:0,d:2,e:4,f:5,g:7,a:9,b:11}[letter]);
+  const value={m:naturalMidi+alteration,n:letter,o:octave,alter:alteration};
+  if(alteration===1)value.a='s'; else if(alteration===-1)value.a='f';
+  else if(alteration===2)value.a='ss'; else if(alteration===-2)value.a='ff';
+  pitchInfo[name]=value;
+  return name;
+}
+function transposeFinishedBarsToKey(bars,key){
+  return bars.map(bar=>bar.map(event=>({...event,p:transposePitchToKey(event.p,key)})));
+}
+function choice(a){ return a[Math.floor(Math.random()*a.length)]; }
+function shuffle(a){ return [...a].sort(()=>Math.random()-.5); }
+function midi(p){return pitchInfo[p].m;}
+function nearestOctaveName(base, targetMidi) {
+  const pc = pitchInfo[base].m % 12;
+  return Object.entries(pitchInfo).filter(([k,v])=>v.m%12===pc).sort((a,b)=>Math.abs(a[1].m-targetMidi)-Math.abs(b[1].m-targetMidi))[0][0];
+}
+function chordToneNeighbors(chord, prev) {
+  const ordered=[...new Set(chordTones[chord])]
+    .filter(p=>pitchInfo[p] && pitchInfo[p].m>=0 && pitchInfo[p].m<=22)
+    .sort((a,b)=>midi(a)-midi(b));
+  if(!prev) return ordered;
+  // Treat chord tones as an ordered stack: from any tone, move only to
+  // that same tone or one of its immediately adjacent chord tones.
+  let anchor=ordered.indexOf(prev);
+  if(anchor<0) {
+    anchor=ordered.reduce((best,p,i)=>
+      Math.abs(midi(p)-midi(prev))<Math.abs(midi(ordered[best])-midi(prev))?i:best,0);
+  }
+  return ordered.filter((p,i)=>Math.abs(i-anchor)<=1);
+}
+function chooseChordPitch(chord, prev, force=null) {
+  let candidates=chordToneNeighbors(chord,prev);
+  if(force && candidates.includes(force)) return force;
+  return choice(candidates);
+}
+function makeBar(chord, start, end=null) {
+  const pitches=[];
+  let prev=start || null;
+  for(let beat=0;beat<4;beat++){
+    let p=chooseChordPitch(chord,prev,beat===3&&end?end:null);
+    pitches.push(p); prev=p;
+  }
+  return pitches;
+}
+function makeBarStartingOn(chord, firstPitch) {
+  // Fix the opening chord tone, then continue with adjacent chord-tone motion.
+  const pitches=[firstPitch];
+  let prev=firstPitch;
+  for(let beat=1;beat<4;beat++){
+    const p=chooseChordPitch(chord,prev);
+    pitches.push(p);
+    prev=p;
+  }
+  return pitches;
+}
+function differentChordTone(chord, referencePitch) {
+  const referenceClass=midi(referencePitch)%12;
+  const candidates=[...new Set(chordTones[chord])]
+    .filter(p=>pitchInfo[p] && midi(p)%12!==referenceClass);
+  return choice(candidates);
+}
+function diatonicPosition(p){
+  const v=pitchInfo[p];
+  if(!v) return null;
+  const letters=['c','d','e','f','g','a','b'];
+  return v.o*7+letters.indexOf(v.n);
+}
+function pitchAtDiatonicPosition(position){
+  const letters=['c','d','e','f','g','a','b'];
+  const octave=Math.floor(position/7), letter=letters[((position%7)+7)%7];
+  return Object.entries(pitchInfo).find(([name,v])=>v.n===letter&&v.o===octave)?.[0] || null;
+}
+function passingToneBetween(a,b){
+  const pa=diatonicPosition(a), pb=diatonicPosition(b);
+  if(pa===null||pb===null||Math.abs(pa-pb)!==2) return null;
+  return pitchAtDiatonicPosition((pa+pb)/2);
+}
+function neighborToneFor(p){
+  const pos=diatonicPosition(p);
+  if(pos===null) return null;
+  const choices=[pitchAtDiatonicPosition(pos-1),pitchAtDiatonicPosition(pos+1)].filter(Boolean);
+  return choices.length?choice(choices):null;
+}
+function embellish(bar, ornamentChance=.90) {
+  const out=[];
+  // Each scaffold note occupies one beat. If the interval to the next beat
+  // can be ornamented, place the passing/neighbor tone on that beat's offbeat.
+  // Evaluate every transition independently; never skip the following interval.
+  for(let i=0;i<bar.length;i++){
+    const a=bar[i], b=bar[i+1];
+    let ornament=null;
+    if(b && Math.random()<ornamentChance){
+      ornament=passingToneBetween(a,b);
+      if(!ornament && a===b) ornament=neighborToneFor(a);
+    }
+    if(ornament) out.push({p:a,d:8},{p:ornament,d:8});
+    else out.push({p:a,d:4});
+  }
+  return out;
+}
+function transposeUpFourth(p) {
+  const v=pitchInfo[p], target=v.m+5;
+  // Diatonic perfect fourth: preserve letter spelling by moving four scale letters.
+  const letters=['c','d','e','f','g','a','b'];
+  const letter=letters.indexOf(v.n)+3;
+  const newLetter=letters[letter%7];
+  const octave=v.o+(letter>=7?1:0);
+  const candidate=Object.entries(pitchInfo).find(([k,x])=>x.n===newLetter&&x.o===octave&&x.m===target);
+  return candidate?candidate[0]:byMidi[target]||p;
+}
+function copyBar(bar, transpose=false){ return bar.map(p=>transpose?transposeUpFourth(p):p); }
+function makeMelody(){
+  const key=choice(majorKeys);
+  const form=Math.random()<.5?'Continuous':'Sectional';
+  const shape=Math.random()<.5?'Rounded':'Simple';
+  const balance=Math.random()<.5?'Balanced':'Not balanced';
+  const firstChords=form==='Continuous'?['C','F','C','G','C','Am','D7','G']:['C','F','C','G','C','F','G7','C'];
+  const lastChords=['G','Am','D7','G','C','F','G7','C'];
+  const bars=[];
+  let previous='C4';
+  for(let i=0;i<8;i++){
+    const ending=(i===7)?(form==='Continuous'?'G4':'C4'):null;
+    let bar;
+    // Preserve the prescribed repeated harmonic/melodic material in the A sections.
+    if(i===4) {
+      // Both forms repeat measure 1 in measure 5 (same C harmony).
+      bar=copyBar(bars[0]);
+    } else if(i===5 && form==='Sectional') {
+      // Sectional form repeats measures 1–2 in measures 5–6.
+      bar=copyBar(bars[1]);
+    } else if(i===0) {
+      // Every melody begins on scale degree 1 (C in the template), then
+      // continues with adjacent chord-tone motion from that fixed tonic.
+      bar=makeBarStartingOn(firstChords[i],'C4');
+    } else {
+      bar=makeBar(firstChords[i],previous,ending);
+    }
+    // Continuous form uses D7 in measure 7; make its leading-tone color explicit.
+    if(form==='Continuous' && i===6){
+      let attempts=0;
+      while(!bar.includes('F#4') && !bar.includes('F#5') && attempts++<200) bar=makeBar(firstChords[i],previous,ending);
+      if(!bar.includes('F#4') && !bar.includes('F#5')) bar[1]='F#4';
+    }
+    // In sectional form, guarantee that measure 8's final sustained pitch is C.
+    if(form==='Sectional' && i===7) bar[3]='C4';
+    bars.push(bar);
+    previous=bars[i][3];
+  }
+  for(let i=0;i<8;i++){
+    let bar=makeBar(lastChords[i],previous,i===7?'C4':null);
+    bars.push(bar); previous=bar[3];
+  }
+  // Formal repetition is applied to the chord-tone skeleton before embellishment.
+  if(shape==='Rounded') {
+    bars[12]=copyBar(bars[0]);
+    bars[13]=copyBar(bars[1]);
+  } else {
+    // A simple binary must make its return measures audibly distinct.
+    // In particular, m.13 begins on a different C-chord member from m.1,
+    // independent of the pitch at the end of m.12. Do the same for m.14
+    // relative to m.2. Continue each bar using adjacent chord-tone motion.
+    const start13=differentChordTone('C',bars[0][0]);
+    const start14=differentChordTone('F',bars[1][0]);
+    bars[12]=makeBarStartingOn('C',start13);
+    bars[13]=makeBarStartingOn('F',start14);
+  }
+  if(balance==='Balanced'){
+    bars[14]=copyBar(bars[6],form==='Continuous');
+    bars[15]=copyBar(bars[7],form==='Continuous');
+  } else {
+    bars[14]=makeBar('G7',bars[13][3]);
+    bars[15]=makeBar('C',bars[14][3],'C4');
+    if(bars[14].join(',')===bars[6].join(',')) bars[14][0]='F4';
+    if(bars[15].join(',')===bars[7].join(',')) bars[15][0]='E4';
+  }
+  // First create the finished, ornamented version of every measure.
+  // Any formal repetition is imposed only AFTER ornamentation, so copied
+  // material includes identical pitches, rhythms, and ornaments.
+  const eventBars=bars.map((bar,i)=>embellish(bar,i<2?.80:1.0));
+
+  // Measures 8 and 16: two quarter-note scaffold beats (possibly ornamented),
+  // followed by a single half note. Build these before applying repetitions.
+  function endingBar(scaffold, ornamentChance=1.0, requiredPitch=null){
+    const opening=embellish(scaffold.slice(0,2),ornamentChance);
+    // Place the required cadence pitch in the octave nearest the preceding
+    // finished note, avoiding unnecessary registral leaps at half-note endings.
+    const target=requiredPitch || scaffold[3];
+    const closePitch=nearestOctaveName(target, midi(opening[opening.length-1].p));
+    return [...opening,{p:closePitch,d:2}];
+  }
+  eventBars[7]=endingBar(bars[7],1.0,form==='Continuous'?'G4':'C4');
+  eventBars[15]=endingBar(bars[15],1.0,'C4');
+  // Measure 4 cadence: retain two quarter-note opening beats (with eligible
+  // ornaments), then close beats 3–4 with a sustained D in the nearest octave.
+  eventBars[3]=endingBar([...bars[3].slice(0,3),'D4'],1.0,'D4');
+
+  const cloneEvents=events=>events.map(e=>({...e}));
+  const transposeEvents=events=>events.map(e=>({p:transposeUpFourth(e.p),d:e.d}));
+
+  // A-section repetitions: copy the fully finished melody.
+  eventBars[4]=cloneEvents(eventBars[0]); // m.5 = m.1 in both forms
+  if(form==='Sectional') eventBars[5]=cloneEvents(eventBars[1]); // m.6 = m.2
+
+  // Rounded form: mm.13–14 repeat mm.1–2, including ornamentation.
+  if(shape==='Rounded'){
+    eventBars[12]=cloneEvents(eventBars[0]);
+    eventBars[13]=cloneEvents(eventBars[1]);
+  }
+
+  // Balanced form: mm.15–16 repeat mm.7–8. Continuous form transposes
+  // the finished phrase up a perfect fourth; sectional form copies it exactly.
+  if(balance==='Balanced'){
+    eventBars[14]=form==='Continuous'?transposeEvents(eventBars[6]):cloneEvents(eventBars[6]);
+    eventBars[15]=form==='Continuous'?transposeEvents(eventBars[7]):cloneEvents(eventBars[7]);
+  }
+
+  // Guard against a "simple" or "not balanced" label whose finished
+  // ornamented measures accidentally match the material they must contrast.
+  const sameEvents=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  if(shape==='Simple'){
+    // The opening event is always the first scaffold pitch, even when ornamented.
+    // Keep the distinction explicit at the finished-melody level too.
+    if(midi(eventBars[12][0].p)%12===midi(eventBars[0][0].p)%12){
+      const replacement=differentChordTone('C',eventBars[0][0].p);
+      eventBars[12][0]={...eventBars[12][0],p:replacement};
+    }
+    if(midi(eventBars[13][0].p)%12===midi(eventBars[1][0].p)%12){
+      const replacement=differentChordTone('F',eventBars[1][0].p);
+      eventBars[13][0]={...eventBars[13][0],p:replacement};
+    }
+  }
+  if(balance==='Not balanced'){
+    if(sameEvents(eventBars[14],eventBars[6])) eventBars[14][0]={...eventBars[14][0],p:eventBars[14][0].p==='C4'?'D4':'C4'};
+    if(sameEvents(eventBars[15],eventBars[7])) eventBars[15][0]={...eventBars[15][0],p:eventBars[15][0].p==='C4'?'D4':'C4'};
+  }
+
+  // Cadential invariants: continuous m.8 ends on G; every melody ends on C.
+  // Keep the final note as a half note. In balanced continuous form, the
+  // transposed m.8 ending naturally becomes C one octave higher.
+  // Measure 8's required pitch class is already set in the nearest octave.
+  const finalEvent=eventBars[15][eventBars[15].length-1];
+  if(midi(finalEvent.p)%12!==0) finalEvent.p='C4';
+
+  // Transpose only after every formal copy, cadence, and ornament is finalized.
+  // This guarantees that repeated material remains an exact pitch/rhythm copy.
+  const keyedBars=transposeFinishedBarsToKey(eventBars,key);
+  return {form,shape,balance,key,bars:keyedBars};
+}
+function meiEvent(e,key){
+  const p=pitchInfo[e.p];
+  const keyAlter=key.scale.find(([letter])=>letter===p.n)?.[1] ?? 0;
+  const alteration=accidentalValue(p);
+  let acc='';
+  if(alteration!==keyAlter){
+    const meiAcc=alteration===0?'n':alteration===1?'s':alteration===-1?'f':alteration===2?'ss':'ff';
+    acc=` accid="${meiAcc}"`;
+  }
+  return `<note pname="${p.n}" oct="${p.o}" dur="${e.d}"${acc}/>`;
+}
+function renderEvents(events,key){
+  let markup='';
+  for(let i=0;i<events.length;i++){
+    const current=events[i], next=events[i+1];
+    // Each generated eighth-note pair occupies one quarter-note beat.
+    // Beam the pair together rather than displaying isolated flagged notes.
+    if(current.d===8 && next && next.d===8){
+      markup+=`<beam>${meiEvent(current,key)}${meiEvent(next,key)}</beam>`;
+      i++;
+    } else {
+      markup+=meiEvent(current,key);
+    }
+  }
+  return markup;
+}
+function melodyToMEI(melody){
+  const measures=melody.bars.map((bar,i)=>{
+    const events=renderEvents(bar,melody.key);
+    const systemBreak=[4,8,12].includes(i)?'<sb/>':'';
+    return `${systemBreak}<measure n="${i+1}"><staff n="1"><layer n="1">${events}</layer></staff></measure>`;
+  }).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+  <mei xmlns="http://www.music-encoding.org/ns/mei" meiversion="5.0">
+  <meiHead><fileDesc><titleStmt><title>Melodic Form Exercise</title></titleStmt><pubStmt/></fileDesc></meiHead>
+  <music><body><mdiv><score><scoreDef meter.count="4" meter.unit="4" key.sig="${melody.key.sig}" key.mode="major"><staffGrp><staffDef n="1" lines="5" clef.shape="G" clef.line="2"/></staffGrp></scoreDef><section><pb/>${measures}</section></score></mdiv></body></music></mei>`;
+}
+function render(){
+  if(!toolkit)return;
+  current=makeMelody();
+  try{
+    const svg=toolkit.renderData(melodyToMEI(current),{});
+    document.getElementById('notation').innerHTML=svg;
+    document.getElementById('status').textContent='16 measures · 4/4 time';
+    clearAnswers();
+  }catch(err){
+    console.error(err);
+    document.getElementById('notation').textContent='Unable to render notation. Please refresh the page.';
+  }
+}
+function clearAnswers(){
+  selections={form:null,shape:null,balance:null};
+  document.querySelectorAll('.choices button').forEach(b=>b.classList.remove('selected','correct','incorrect'));
+  document.getElementById('feedback').textContent='';
+  document.getElementById('score').textContent='';
+}
+document.querySelectorAll('.choices button').forEach(button=>{
+  button.addEventListener('click',()=>{
+    const group=button.parentElement, q=group.dataset.question;
+    selections[q]=button.dataset.value;
+    group.querySelectorAll('button').forEach(b=>b.classList.toggle('selected',b===button));
+    document.getElementById('feedback').textContent='';
+    document.getElementById('score').textContent='';
+  });
+});
+document.getElementById('submit').addEventListener('click',()=>{
+  if(!current)return;
+  if(Object.values(selections).some(v=>!v)){
+    document.getElementById('feedback').textContent='Please answer all three questions before submitting.';
+    return;
+  }
+  const answers={form:current.form,shape:current.shape,balance:current.balance};
+  let correct=0;
+  document.querySelectorAll('.choices').forEach(group=>{
+    const q=group.dataset.question;
+    group.querySelectorAll('button').forEach(b=>{
+      b.classList.remove('selected');
+      if(b.dataset.value===answers[q]) b.classList.add('correct');
+      else if(b.dataset.value===selections[q]) b.classList.add('incorrect');
+    });
+    if(selections[q]===answers[q])correct++;
+  });
+  document.getElementById('score').textContent=`${correct}/3 correct`;
+  document.getElementById('feedback').textContent=correct===3?'Excellent! All three identifications are correct.':'Review the highlighted answers, then generate another melody to try again.';
+});
+document.getElementById('clear').addEventListener('click',clearAnswers);
+document.getElementById('generate').addEventListener('click',render);
+if(window.verovio && verovio.module){
+  verovio.module.onRuntimeInitialized=()=>{
+    toolkit=new verovio.toolkit();
+    toolkit.setOptions({scale:18,adjustPageWidth:true,adjustPageHeight:true,pageWidth:1100,pageHeight:560,breaks:'encoded',footer:'none',header:'none',spacingSystem:1,spacingStaff:2.2,spacingLinear:0.5,pageMarginTop:8,pageMarginBottom:8,pageMarginLeft:10,pageMarginRight:10});
+    render();
+  };
+}
+</script>
+</body>
+</html>
